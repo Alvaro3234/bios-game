@@ -6,8 +6,13 @@ Wraps a MenuModel and exposes a small set of EFI Shell-flavoured commands:
     ls [page]                     list pages, or items on a page
     getvar <id>                   read current value of an item
     setvar <id> <value...>        set an option/numeric/password value
+    dmpstore                      dump every NVRAM variable
     bcfg boot dump                show boot1/boot2/boot3 priorities
     bcfg boot mv <a> <b>          swap two boot priorities (1-based)
+    time [hh:mm:ss]               show or set the RTC time
+    date [mm/dd/yyyy]             show or set the RTC date
+    map / memmap / dh / ver       environment information
+    echo <text>                   print text
     reset cold                    save and reboot
     exit                          discard changes and reboot
 
@@ -15,6 +20,8 @@ The values written via `setvar` go to `model.values`; on `reset cold` the
 caller is expected to inspect `wants_reboot`, persist the state, then run
 the normal reboot transition.
 """
+
+import datetime
 
 from menu_model import iter_persistable
 
@@ -140,8 +147,24 @@ class ShellSession:
             return self._getvar(args)
         if op == "setvar":
             return self._setvar(args)
+        if op == "dmpstore":
+            return self._dmpstore()
         if op == "bcfg":
             return self._bcfg(args)
+        if op == "time":
+            return self._time(args)
+        if op == "date":
+            return self._date(args)
+        if op == "map":
+            return self._map()
+        if op == "memmap":
+            return self._memmap()
+        if op == "dh":
+            return self._dh()
+        if op == "ver":
+            return self._ver()
+        if op == "echo":
+            return [" ".join(args)]
         if op == "reset":
             return self._reset(args)
         if op == "exit":
@@ -177,12 +200,101 @@ class ShellSession:
             "  ls [page]                  List pages, or items on a page",
             "  getvar <id>                Read the current value of <id>",
             "  setvar <id> <value...>     Write a new value to <id>",
+            "  dmpstore                   Dump all NVRAM variables",
             "  bcfg boot dump             Show boot priorities",
             "  bcfg boot mv <a> <b>       Swap two boot priorities",
+            "  time [hh:mm:ss]            Show or set the RTC time",
+            "  date [mm/dd/yyyy]          Show or set the RTC date",
+            "  map                        Show the device mapping table",
+            "  memmap                     Show the UEFI memory map",
+            "  dh                         Dump the handle database",
+            "  ver                        Show shell and UEFI versions",
+            "  echo <text>                Print text",
             "  reset cold                 Persist changes and reboot",
             "  exit                       Discard pending changes and quit",
             "  cls / clear                Clear the scrollback",
         ]
+
+    # ------------------------------------------------------------ info
+    def _ver(self):
+        return [
+            "UEFI Interactive Shell v2.2",
+            "EDK II",
+            "UEFI v2.70 (American Megatrends, 0x0005000B)",
+        ]
+
+    def _map(self):
+        return [
+            "Mapping table",
+            "      FS0: Alias(s):HD0a65535a1:;BLK1:",
+            "          PciRoot(0x0)/Pci(0x17,0x0)/Sata(0x0,0xFFFF,0x0)/"
+            "HD(1,GPT,8E3D...)",
+            "     BLK0: Alias(s):",
+            "          PciRoot(0x0)/Pci(0x17,0x0)/Sata(0x0,0xFFFF,0x0)",
+            "     BLK2: Alias(s):",
+            "          PciRoot(0x0)/Pci(0x17,0x0)/Sata(0x1,0xFFFF,0x0)",
+        ]
+
+    def _memmap(self):
+        return [
+            "Type       Start            End              # Pages  Attributes",
+            "Available  0000000000000000-000000000009FFFF 000000A0 000000000000000F",
+            "BS_Data    00000000000A0000-00000000000FFFFF 00000060 0000000000000000",
+            "Available  0000000000100000-00000000CFFFFFFF 000CFF00 000000000000000F",
+            "Reserved   00000000D0000000-00000000FFFFFFFF 00030000 0000000000000001",
+            "Available  0000000100000000-000000042FFFFFFF 00330000 000000000000000F",
+            "",
+            "  16,384 MB total memory detected",
+        ]
+
+    def _dh(self):
+        return [
+            "Handle dump",
+            "  1: Image(DxeCore)",
+            "  2: FirmwareVolume FirmwareVolumeBlock",
+            "  3: DevicePath(PciRoot(0x0))",
+            "  4: BlockIO DevicePath(..Sata(0x0,0xFFFF,0x0))",
+            "  5: BlockIO DevicePath(..Sata(0x1,0xFFFF,0x0))",
+            "  6: SimpleTextIn SimpleTextOut",
+        ]
+
+    def _dmpstore(self):
+        out = []
+        for it in _all_items():
+            v = self.model.values.get(it["id"], "")
+            tag = " [grayed]" if not self.model.is_enabled(it) else ""
+            out.append("Variable NV+BS '%s' = %r%s" % (it["id"], v, tag))
+        return out
+
+    # ------------------------------------------------------------ clock
+    def _time(self, args):
+        now = datetime.datetime.now()
+        cur = now + self.model.time_offset
+        if not args:
+            return [cur.strftime("%H:%M:%S")]
+        try:
+            parts = [int(p) for p in args[0].split(":")]
+            h, m, s = (parts + [0, 0])[:3]
+            new = cur.replace(hour=h, minute=m, second=s)
+        except ValueError:
+            return ["Invalid time. Use: time hh:mm:ss"]
+        self.model.time_offset = new - now
+        return ["Time: %s (RTC updated)" % new.strftime("%H:%M:%S")]
+
+    def _date(self, args):
+        now = datetime.datetime.now()
+        cur = now + self.model.time_offset
+        if not args:
+            return [cur.strftime("%m/%d/%Y")]
+        try:
+            mth, day, yr = (int(p) for p in args[0].split("/"))
+            if yr < 100:
+                yr += 2000
+            new = cur.replace(year=yr, month=mth, day=day)
+        except ValueError:
+            return ["Invalid date. Use: date mm/dd/yyyy"]
+        self.model.time_offset = new - now
+        return ["Date: %s (RTC updated)" % new.strftime("%m/%d/%Y")]
 
     # ------------------------------------------------------------ ls
     def _ls(self, args):

@@ -1,4 +1,4 @@
-"""Data-driven definitions of the six Aptio setup pages.
+"""Data-driven definitions of the Aptio setup pages.
 
 Item schema:
   type:       info | option | numeric | datetime | password | submenu | action | blank
@@ -61,7 +61,8 @@ MAIN_PAGE = {
         blank(),
         header("Memory Information"),
         info("Total Memory", "16384 MB"),
-        info("Memory Frequency", "2666 MHz"),
+        {"type": "info", "label": "Memory Frequency",
+         "dynamic": "hw:dram_freq_now"},
         blank(),
         {"type": "option", "id": "language", "label": "System Language",
          "values": ["English"], "default": 0,
@@ -75,6 +76,52 @@ MAIN_PAGE = {
          "help": "Set the Time. Use Tab to switch between Time elements."},
         blank(),
         info("Access Level", "Administrator"),
+    ],
+}
+
+OC_PAGE = {
+    "id": "oc", "title": "Ai Tweaker",
+    "items": [
+        header("Memory Overclocking"),
+        blank(),
+        {"type": "info", "label": "Target DRAM Speed",
+         "dynamic": "hw:target_dram"},
+        blank(),
+        {"type": "option", "id": "xmp", "label": "XMP (Extreme Memory Profile)",
+         "values": ["Disabled", "Profile 1", "Profile 2"], "default": 0,
+         "help": "Load the DIMM's factory overclock profile. Profile 1: "
+                 "3200 MT/s 1.35V. Profile 2: 3600 MT/s 1.45V. Profiles "
+                 "beyond the memory controller's comfort zone may need "
+                 "manual voltage and command rate tuning to train."},
+        {"type": "option", "id": "dram_freq", "label": "DRAM Frequency",
+         "values": ["Auto", "2133 MHz", "2666 MHz", "3200 MHz", "3600 MHz"],
+         "default": 0,
+         "help": "Force a memory operating frequency. Auto follows XMP or "
+                 "JEDEC. Frequencies above 3200 MHz are not guaranteed to "
+                 "train on this memory controller without extra voltage."},
+        {"type": "option", "id": "cmd_rate", "label": "DRAM Command Rate",
+         "values": ["Auto", "1T", "2T"], "default": 0,
+         "help": "Delay between DRAM chip select and command. 2T relaxes "
+                 "signal timing and helps high-frequency stability at a "
+                 "small performance cost."},
+        {"type": "option", "id": "dram_volt", "label": "DRAM Voltage",
+         "values": ["Auto", "1.20V", "1.35V", "1.45V"], "default": 0,
+         "help": "DRAM supply voltage. High-frequency profiles typically "
+                 "require 1.35V or more to pass memory training."},
+        blank(),
+        header("CPU Overclocking"),
+        blank(),
+        {"type": "numeric", "id": "cpu_ratio", "label": "CPU Core Ratio",
+         "min": 8, "max": 60, "default": 36,
+         "help": "CPU multiplier applied to the 100 MHz base clock. "
+                 "Ratios above stock may require a positive core voltage "
+                 "offset to remain stable."},
+        {"type": "option", "id": "vcore_offset", "label": "CPU Core Voltage Offset",
+         "values": ["Auto", "-0.10V", "-0.05V", "+0.00V", "+0.05V",
+                    "+0.10V", "+0.15V", "+0.20V"], "default": 0,
+         "help": "Offset added to the CPU core voltage. Higher ratios "
+                 "need more voltage; too little causes watchdog resets, "
+                 "too much raises temperatures."},
     ],
 }
 
@@ -147,6 +194,11 @@ SATA_CONFIG = {
          "values": ENABLED_DISABLED, "default": 0,
          "depends_on": ("sata_enable", "Enabled"),
          "help": "Enable PCH to aggressively enter link power state."},
+        {"type": "option", "id": "m2_mode", "label": "M.2_2 Configuration",
+         "values": ["Auto", "PCIe", "SATA"], "default": 0,
+         "help": "Operating mode of the M.2_2 socket. The socket shares "
+                 "bandwidth with Serial ATA Port 1: when set to SATA, "
+                 "Serial ATA Port 1 is disabled."},
         blank(),
         info("Serial ATA Port 0", "Samsung SSD 860  (500.1GB)"),
         info("  Software Preserve", "SUPPORTED"),
@@ -157,7 +209,9 @@ SATA_CONFIG = {
         info("  Software Preserve", "SUPPORTED"),
         {"type": "option", "id": "sata_p1_hotplug", "label": "  Hot Plug",
          "values": DISABLED_ENABLED, "default": 0,
-         "help": "Designates this port as Hot Pluggable."},
+         "depends_on": ("m2_mode", ["Auto", "PCIe"]),
+         "help": "Designates this port as Hot Pluggable. Unavailable "
+                 "while M.2_2 is in SATA mode (shared bandwidth)."},
         info("Serial ATA Port 2", "Empty"),
         info("Serial ATA Port 3", "Empty"),
     ],
@@ -249,6 +303,33 @@ NETWORK_STACK = {
     ],
 }
 
+APM_CONFIG = {
+    "type": "submenu", "label": "APM Configuration",
+    "help": "Advanced Power Management settings",
+    "items": [
+        header("APM Configuration"),
+        blank(),
+        {"type": "option", "id": "restore_ac", "label": "Restore On AC Power Loss",
+         "values": ["Power Off", "Power On", "Last State"], "default": 0,
+         "help": "System behavior when power is restored after an AC "
+                 "power loss."},
+        {"type": "option", "id": "erp", "label": "ErP Ready",
+         "values": ["Disabled", "Enabled (S4+S5)"], "default": 0,
+         "help": "Allows the BIOS to switch off power in S4+S5 to meet "
+                 "the ErP requirement. When enabled, Wake on LAN and "
+                 "Power On By RTC are not functional in those states."},
+        {"type": "option", "id": "rtc_wake", "label": "Power On By RTC",
+         "values": DISABLED_ENABLED, "default": 0,
+         "help": "Allow the Real-Time Clock alarm to power the system on "
+                 "at a scheduled time."},
+        {"type": "numeric", "id": "rtc_wake_hour", "label": "RTC Alarm Hour",
+         "min": 0, "max": 23, "default": 0,
+         "depends_on": ("rtc_wake", "Enabled"),
+         "help": "Hour (0-23) at which the RTC alarm powers the system "
+                 "on."},
+    ],
+}
+
 ADVANCED_PAGE = {
     "id": "advanced", "title": "Advanced",
     "items": [
@@ -258,6 +339,44 @@ ADVANCED_PAGE = {
         USB_CONFIG,
         TPM_CONFIG,
         NETWORK_STACK,
+        APM_CONFIG,
+    ],
+}
+
+MONITOR_PAGE = {
+    "id": "monitor", "title": "Monitor",
+    "items": [
+        header("Hardware Monitor"),
+        blank(),
+        {"type": "info", "label": "CPU Temperature", "dynamic": "hw:cpu_temp"},
+        {"type": "info", "label": "Motherboard Temperature",
+         "dynamic": "hw:mb_temp"},
+        blank(),
+        {"type": "info", "label": "CPU Fan Speed", "dynamic": "hw:cpu_fan_rpm"},
+        {"type": "info", "label": "Chassis Fan Speed",
+         "dynamic": "hw:chassis_fan_rpm"},
+        blank(),
+        {"type": "info", "label": "CPU Core Voltage", "dynamic": "hw:vcore"},
+        {"type": "info", "label": "3.3V Voltage", "dynamic": "hw:v33"},
+        {"type": "info", "label": "5V Voltage", "dynamic": "hw:v5"},
+        {"type": "info", "label": "12V Voltage", "dynamic": "hw:v12"},
+        {"type": "info", "label": "VBAT (CMOS Battery)", "dynamic": "hw:vbat"},
+        blank(),
+        header("Fan Control"),
+        blank(),
+        {"type": "option", "id": "cpu_fan_profile", "label": "CPU Fan Profile",
+         "values": ["Standard", "Silent", "Turbo", "Disabled"], "default": 0,
+         "help": "Fan curve applied to the CPU fan header. Warning: "
+                 "'Disabled' stops the CPU fan entirely; the processor "
+                 "will overheat under load."},
+        {"type": "option", "id": "chassis_fan_profile",
+         "label": "Chassis Fan Profile",
+         "values": ["Standard", "Silent", "Turbo", "Disabled"], "default": 0,
+         "help": "Fan curve applied to the chassis fan headers."},
+        {"type": "option", "id": "case_open_warning", "label": "Case Open Warning",
+         "values": DISABLED_ENABLED, "default": 0,
+         "help": "Halt POST with a warning when the chassis intrusion "
+                 "header reports the case was opened."},
     ],
 }
 
@@ -292,7 +411,8 @@ MEMORY_CONFIG = {
         header("Memory Configuration"),
         blank(),
         info("Memory RC Version", "0.7.1.80"),
-        info("Memory Frequency", "2666 MHz"),
+        {"type": "info", "label": "Memory Frequency",
+         "dynamic": "hw:dram_freq_now"},
         info("tCL-tRCD-tRP-tRAS", "19-19-19-43"),
         blank(),
         info("DIMM_A1", "Populated & Enabled"),
@@ -545,5 +665,5 @@ SAVE_EXIT_PAGE = {
     ],
 }
 
-MENU = [MAIN_PAGE, ADVANCED_PAGE, CHIPSET_PAGE, SECURITY_PAGE, BOOT_PAGE,
-        SAVE_EXIT_PAGE]
+MENU = [MAIN_PAGE, OC_PAGE, ADVANCED_PAGE, CHIPSET_PAGE, SECURITY_PAGE,
+        MONITOR_PAGE, BOOT_PAGE, SAVE_EXIT_PAGE]

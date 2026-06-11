@@ -18,6 +18,44 @@ CPU_BRAND_INFO = {
     "speed": {"intel": "3600 MHz", "amd": "3600 MHz"},
 }
 
+# Hardware sensor/info readouts referenced via `dynamic: "hw:<key>"`.
+# Each entry is either a plain string, or a reactive dict resolved
+# against the live values:  {"by": "<setting_id>", "map": {value: text},
+# "default": text}.  Tickets override these per-machine (`hw_info` in the
+# challenge dict) to plant diagnostic clues.
+DEFAULT_HW_INFO = {
+    "cpu_temp": "+47.0 C",
+    "mb_temp": "+34.0 C",
+    "cpu_fan_rpm": {"by": "cpu_fan_profile",
+                    "map": {"Standard": "1280 RPM", "Silent": "830 RPM",
+                            "Turbo": "2160 RPM", "Disabled": "N/A"},
+                    "default": "1280 RPM"},
+    "chassis_fan_rpm": {"by": "chassis_fan_profile",
+                        "map": {"Standard": "940 RPM", "Silent": "620 RPM",
+                                "Turbo": "1750 RPM", "Disabled": "N/A"},
+                        "default": "940 RPM"},
+    "vcore": {"by": "vcore_offset",
+              "map": {"Auto": "+1.200 V", "-0.10V": "+1.104 V",
+                      "-0.05V": "+1.152 V", "+0.00V": "+1.200 V",
+                      "+0.05V": "+1.248 V", "+0.10V": "+1.296 V",
+                      "+0.15V": "+1.344 V", "+0.20V": "+1.392 V"},
+              "default": "+1.200 V"},
+    "v33": "+3.312 V",
+    "v5": "+5.080 V",
+    "v12": "+12.192 V",
+    "vbat": "+3.040 V",
+    "dram_freq_now": {"by": "xmp",
+                      "map": {"Disabled": "2666 MHz",
+                              "Profile 1": "3200 MHz",
+                              "Profile 2": "3600 MHz"},
+                      "default": "2666 MHz"},
+    "target_dram": {"by": "xmp",
+                    "map": {"Disabled": "2133 MT/s (JEDEC)",
+                            "Profile 1": "3200 MT/s 16-18-18-38 1.35V",
+                            "Profile 2": "3600 MT/s 17-19-19-39 1.45V"},
+                    "default": "2133 MT/s (JEDEC)"},
+}
+
 
 def iter_persistable(items=None):
     """Yield every option/numeric/password item (recursing into submenus)."""
@@ -41,14 +79,24 @@ class Level:
 
 
 class MenuModel:
-    def __init__(self, cpu_brand="intel"):
+    def __init__(self, cpu_brand="intel", home_items=None):
+        """`home_items` replaces the tabbed pages with a single home menu
+        (vendor-specific page grouping, e.g. Award's category grid). The
+        item dicts must reference the shared menu_data items so values
+        and ids stay common across vendors."""
         self.pages = MENU
         self.page_idx = 0
         self.cpu_brand = cpu_brand   # "intel" | "amd" -> drives label_variants
+        self.home_items = home_items
         self.values = {}            # id -> value (str for option, int for numeric)
+        self.hw_info = dict(DEFAULT_HW_INFO)
         self.time_offset = datetime.timedelta(0)
         self.dt_field = 0           # active sub-field of the date/time item
-        self.stack = [Level(self.pages[0]["items"], self.pages[0]["title"])]
+        if home_items is not None:
+            self.stack = [Level(home_items, "home")]
+        else:
+            self.stack = [Level(self.pages[0]["items"],
+                                self.pages[0]["title"])]
         self.load_defaults()
         self._snapshot = dict(self.values)   # for F2 "Previous Values"
         for level in self.stack:
@@ -86,6 +134,12 @@ class MenuModel:
         return dict(self.values,
                     _time_offset_s=self.time_offset.total_seconds())
 
+    def set_hw_info(self, overrides):
+        """Defaults plus the ticket's per-machine sensor overrides."""
+        self.hw_info = dict(DEFAULT_HW_INFO)
+        if overrides:
+            self.hw_info.update(overrides)
+
     def snapshot(self):
         self._snapshot = dict(self.values)
 
@@ -114,6 +168,8 @@ class MenuModel:
                 if dyn.startswith("cpu_brand:"):
                     key = dyn.split(":", 1)[1]
                     return CPU_BRAND_INFO.get(key, {}).get(self.cpu_brand, "")
+                if dyn.startswith("hw:"):
+                    return self._resolve_hw(dyn.split(":", 1)[1])
                 return ""
             variants = item.get("value_variants")
             if variants:
@@ -130,13 +186,23 @@ class MenuModel:
             return now.strftime("[%H:%M:%S]")
         return ""
 
+    def _resolve_hw(self, key):
+        entry = self.hw_info.get(key, "")
+        if isinstance(entry, dict):
+            cur = self.values.get(entry.get("by"))
+            return entry.get("map", {}).get(cur, entry.get("default", ""))
+        return entry
+
     # ------------------------------------------------------------ state
     def is_enabled(self, item):
         if item.get("disabled"):
             return False
         dep = item.get("depends_on")
         if dep:
-            return self.values.get(dep[0]) == dep[1]
+            cur = self.values.get(dep[0])
+            if isinstance(dep[1], (list, tuple)):
+                return cur in dep[1]
+            return cur == dep[1]
         return True
 
     def is_selectable(self, item):
@@ -187,10 +253,26 @@ class MenuModel:
             level.scroll = level.cursor - VISIBLE_ROWS + 1
 
     def switch_page(self, delta):
+        if self.home_items is not None:
+            # Home-menu mode has no pages; LEFT/RIGHT jump columns instead.
+            if not self.in_submenu:
+                self._jump_column()
+            return
         self.page_idx = (self.page_idx + delta) % len(self.pages)
         page = self.pages[self.page_idx]
         self.stack = [Level(page["items"], page["title"])]
         self._init_cursor(self.level)
+
+    def _jump_column(self):
+        """Two-column home grid: move the cursor to the other column."""
+        level = self.level
+        n = len(level.items)
+        half = (n + 1) // 2
+        c = level.cursor
+        target = c - half if c >= half else min(c + half, n - 1)
+        if 0 <= target < n and self.is_selectable(level.items[target]):
+            level.cursor = target
+        self._clamp_scroll(level)
 
     def enter_submenu(self, item):
         self.stack.append(Level(item["items"], item["label"]))

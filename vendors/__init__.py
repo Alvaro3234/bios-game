@@ -9,12 +9,14 @@ Add a new vendor: import its module here and register it in VENDORS.
 from vendors import ami as _ami
 from vendors import award as _award
 from vendors import efi as _efi
+from vendors import phoenix as _phoenix
 
 
 VENDORS = {
     "ami": _ami.spec,
     "award": _award.spec,
     "efi": _efi.spec,
+    "phoenix": _phoenix.spec,
 }
 
 

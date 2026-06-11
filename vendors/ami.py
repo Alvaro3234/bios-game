@@ -4,7 +4,8 @@ from theme import (GRID_W, BLUE, BODY, WHITE, DISABLED, SHADOW,
                    HEADER_ROW, TAB_ROW, FRAME_TOP, FRAME_BOT, FOOTER_ROW,
                    DIVIDER_X, ITEM_X0, VALUE_X, HELP_X0, HELP_X1,
                    LEGEND_DIV_ROW, ITEM_Y0, ITEM_Y1, VISIBLE_ROWS,
-                   TITLE, FOOTER, KEY_LEGEND)
+                   TITLE, FOOTER, KEY_LEGEND,
+                   POST_BG, POST_FG, POST_HI)
 import screen as sc
 from renderer import word_wrap
 
@@ -156,6 +157,23 @@ def draw_help_popup(buf):
     buf.text(x + (w - 8) // 2, y + h - 2, "  [Ok]  ", BLUE, WHITE)
 
 
+# --- POST data ---------------------------------------------------------
+
+POST_LINES = [
+    (300,  "AMIBIOS(C)2019 American Megatrends, Inc."),
+    (300,  "BIOS Date: 04/12/2019 14:33:08 Ver: Z390M 2.60"),
+    (700,  "CPU : Intel(R) Core(TM) i7-9700K CPU @ 3.60GHz"),
+    (700,  " Speed : 3.60 GHz"),
+    (2400, "USB Devices total: 1 Drive, 1 Keyboard, 1 Mouse, 2 Hubs"),
+    (2800, "Detected ATA/ATAPI Devices..."),
+    (3000, "  SATA Port 0 : Samsung SSD 860  500GB"),
+    (3200, "  SATA Port 1 : ST2000DM008-2FR102"),
+]
+POST_MEMCOUNT = {"t0": 1000, "dur": 1200, "after": 4,
+                 "total": 16384, "step": 64,
+                 "fmt": "Memory Testing : %d MB", "ok_suffix": " OK"}
+
+
 spec = {
     "id": "ami",
     "title": TITLE,
@@ -165,7 +183,11 @@ spec = {
     "draw_dialog": draw_dialog,
     "draw_text_popup": draw_text_popup,
     "draw_help_popup": draw_help_popup,
-    # POST and beep info: filled in by post_screen / audio later.
+    "post_lines": POST_LINES,
+    "post_prompt": "Press DEL or F2 to enter UEFI BIOS Setup",
+    "post_prompt_keys": "del f2",
+    "post_palette": (POST_BG, POST_FG, POST_HI),
+    "post_memcount": POST_MEMCOUNT,
     # AMI POST: 1 long = OK, 1 long + 2 short = video error, etc.
     "beep_map": {
         "ok": [(900, 350)],

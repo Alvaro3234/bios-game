@@ -38,10 +38,10 @@ class App:
         self.shell = None          # ShellSession when vendor == "efi"
         self.popup = None          # active popup/dialog dict, or None
         self.outcome = None        # bool, set when entering OUTCOME
+        self.outcome_fail = None   # boot-constraint fail dict, or None
         self.reboot_t0 = 0
         self.running = True
         self._last_outcome_jingled = None
-        self._last_post_beeped = False
         # Pre-game UI helpers (lazily attached when entering the menu)
         self.menu = None
         self.endless_prompt = None
@@ -61,7 +61,7 @@ class App:
                 self.game.ensure_machine_state()
                 self.state = BRIEFING
         else:
-            self.post.reset(now)
+            self._power_on(now)
 
     def _enter_main_menu(self):
         from menu_screen import MainMenu
@@ -85,11 +85,22 @@ class App:
         self.game.ensure_machine_state()
         self.state = BRIEFING
 
+    def _power_on(self, now):
+        """Transition into POST with the active vendor's boot sequence."""
+        self.state = POST
+        ctx = (self.game.post_context()
+               if self.game and not self.game.complete else {})
+        self.post.reset(now, self._vendor(), ctx)
+
     def enter_setup(self):
         cpu_brand = self.game.current_cpu_brand() if self.game else "intel"
         vendor_id = self.game.current_vendor() if self.game else "ami"
-        self.model = MenuModel(cpu_brand)
+        home_fn = vendors.get(vendor_id).get("home_items_fn")
+        self.model = MenuModel(cpu_brand,
+                               home_items=home_fn() if home_fn else None)
         self.model.apply_saved(settings.load())
+        if self.game and not self.game.complete:
+            self.model.set_hw_info(self.game.current().get("hw_info"))
         self.model.snapshot()
         self.popup = None
         if vendor_id == "efi":
@@ -109,25 +120,25 @@ class App:
     def update(self, now):
         if self.state == REBOOT and now - self.reboot_t0 >= REBOOT_MS:
             if self.game:
-                self.outcome = self.game.evaluate()
+                self.outcome, self.outcome_fail = self.game.evaluate_full()
                 self.state = OUTCOME
                 if self.audio and self._last_outcome_jingled is not now:
                     self.audio.jingle("success" if self.outcome else "fail")
+                    if not self.outcome and self.outcome_fail:
+                        kind = self.outcome_fail.get("beep")
+                        pattern = (self._vendor().get("beep_map", {})
+                                   .get(kind) or []) if kind else []
+                        if pattern:
+                            self.audio.beep_pattern(pattern)
                     self._last_outcome_jingled = now
             else:
-                self.state = POST
-                self.post.reset(now)
-        elif self.state == POST and self.audio and not self._last_post_beeped:
-            # Play the vendor OK beep once when POST has finished its memory
-            # count (~2400 ms in). Cheap heuristic: triggered after 2400ms.
-            if now - getattr(self.post, "t0", now) > 2400:
-                v = self._vendor()
-                pattern = v.get("beep_map", {}).get("ok") or []
+                self._power_on(now)
+        elif self.state == POST and self.audio:
+            kind = self.post.pending_beep(now)
+            if kind:
+                pattern = self._vendor().get("beep_map", {}).get(kind) or []
                 if pattern:
                     self.audio.beep_pattern(pattern)
-                self._last_post_beeped = True
-        elif self.state != POST:
-            self._last_post_beeped = False
 
     # ------------------------------------------------------------ input
     def handle_key(self, event, now):
@@ -137,8 +148,12 @@ class App:
             self._menu_key(event, now)
             return
         if self.state == POST:
-            if self.post.handle_key(event.key) == "setup":
+            res = self.post.handle_key(event.key)
+            if res == "setup":
                 self.enter_setup()
+            elif res == "off":
+                # Dead-video machine: power off and go back to the bench.
+                self.state = BRIEFING
         elif self.state == SETUP:
             if self.popup:
                 self._popup_key(event, now)
@@ -147,8 +162,8 @@ class App:
         elif self.state == SETUP_SHELL:
             self._shell_key(event, now)
         elif self.state == BRIEFING:
-            self.state = POST
-            self.post.reset(now)
+            if not self._bench_key(event):
+                self._power_on(now)
         elif self.state == OUTCOME:
             if self.outcome:
                 if self.game.has_more_phases():
@@ -174,6 +189,26 @@ class App:
             elif event.key in (pygame.K_ESCAPE, pygame.K_q):
                 self.running = False
 
+    def _bench_key(self, event):
+        """Physical bench actions offered on the briefing screen when the
+        ticket declares them (`bench`). Returns True if one was handled."""
+        if not (self.game and not self.game.complete):
+            return False
+        ch = self.game.current()
+        bench = ch.get("bench", [])
+        if event.key == pygame.K_b and "replace_battery" in bench:
+            self.game.perform_action("replace_battery")
+            return True
+        if event.key == pygame.K_j and "clear_cmos" in bench:
+            # Shorting the jumper wipes the (sabotaged) NVRAM contents
+            # back to factory defaults.
+            if not self.game.has_action("clear_cmos"):
+                model = MenuModel(self.game.current_cpu_brand())
+                settings.save(model.export_values())
+            self.game.perform_action("clear_cmos")
+            return True
+        return False
+
     def _setup_key(self, event, now):
         m = self.model
         key = event.key
@@ -192,6 +227,10 @@ class App:
         elif key in _PLUS_KEYS and item:
             m.change(item, 1)
         elif key in _MINUS_KEYS and item:
+            m.change(item, -1)
+        elif key == pygame.K_F6 and item:     # F5/F6 = -/+ (Phoenix/Award)
+            m.change(item, 1)
+        elif key == pygame.K_F5 and item:
             m.change(item, -1)
         elif key == pygame.K_RETURN and item:
             self._activate(item, now)
@@ -267,6 +306,13 @@ class App:
             self._dialog("Reset To Setup Mode",
                          ["Delete all Secure Boot key databases",
                           "from NVRAM?"], lambda: None)
+        elif action == "ide_autodetect":
+            self._dialog("IDE HDD Auto Detection",
+                         ["Detecting IDE Primary Master   ... Samsung SSD 860",
+                          "Detecting IDE Primary Slave    ... ST2000DM008",
+                          "Detecting IDE Secondary Master ... None",
+                          "Detecting IDE Secondary Slave  ... None"],
+                         lambda: None, buttons=["OK"])
         elif action == "boot_override":
             self.reboot(now)
 
@@ -384,9 +430,10 @@ class App:
         elif event.unicode:
             sh.handle_char(event.unicode)
 
-    def _dialog(self, title, lines, on_yes):
+    def _dialog(self, title, lines, on_yes, buttons=None):
         self.popup = {"kind": "dialog", "title": title, "lines": lines,
-                      "buttons": ["Yes", "No"], "sel": 0, "on_yes": on_yes}
+                      "buttons": buttons or ["Yes", "No"], "sel": 0,
+                      "on_yes": on_yes}
 
     # ------------------------------------------------------------ popups
     def _popup_key(self, event, now):
@@ -478,7 +525,7 @@ class App:
         elif self.state == BRIEFING:
             self.game.draw_briefing(buf, now)
         elif self.state == OUTCOME:
-            self.game.draw_outcome(buf, self.outcome, now)
+            self.game.draw_outcome(buf, self.outcome, now, self.outcome_fail)
         elif self.state == WIN:
             self.game.draw_win(buf, now)
         elif self.state == SETUP_SHELL:

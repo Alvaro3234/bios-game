@@ -45,7 +45,7 @@ def make_scanline_overlay(size):
     return surf
 
 
-def run_screenshot(path, screen_name, level=0):
+def run_screenshot(path, screen_name, level=0, vendor=None):
     """Render one frame headlessly and save it (used for verification)."""
     os.environ["SDL_VIDEODRIVER"] = "dummy"
     pygame.init()
@@ -56,7 +56,21 @@ def run_screenshot(path, screen_name, level=0):
     from screen import ScreenBuffer
 
     buf = ScreenBuffer()
-    if screen_name in ("briefing", "fail", "success", "win"):
+    if vendor and screen_name in ("post", "setup"):
+        import vendors
+        from menu_model import MenuModel
+        v = vendors.get(vendor)
+        if screen_name == "post":
+            from post_screen import PostScreen
+            ps = PostScreen()
+            ps.reset(0, v)
+            ps.draw(buf, 10_000)
+        elif "draw_setup" in v:
+            v["draw_setup"](buf, MenuModel())
+        else:
+            from shell import ShellSession
+            v["draw_setup_shell"](buf, ShellSession(MenuModel()))
+    elif screen_name in ("briefing", "fail", "success", "win"):
         # Draw game screens directly (no progress/settings side effects)
         from game import GameManager
         gm = GameManager()
@@ -178,6 +192,9 @@ if __name__ == "__main__":
                         default="setup")
     parser.add_argument("--level", type=int, default=0,
                         help="challenge index for game-screen screenshots")
+    parser.add_argument("--vendor",
+                        choices=["ami", "award", "efi", "phoenix"],
+                        help="vendor skin for post/setup screenshots")
     parser.add_argument("--freeplay", action="store_true",
                         help="sandbox mode without challenges")
     parser.add_argument("--shift", type=int, metavar="SEED",
@@ -188,7 +205,7 @@ if __name__ == "__main__":
                         help="skip the main menu and resume the campaign")
     args = parser.parse_args()
     if args.screenshot:
-        run_screenshot(args.screenshot, args.screen, args.level)
+        run_screenshot(args.screenshot, args.screen, args.level, args.vendor)
         sys.exit(0)
     show_menu = not (args.freeplay or args.shift is not None or args.no_menu)
     run(freeplay=args.freeplay, shift_seed=args.shift, shift_n=args.shift_n,

@@ -58,7 +58,10 @@ app.handle_key(key(pygame.K_DELETE), 0)
 check("DEL enters setup", app.state == SETUP)
 check("starts on Main page", app.model.pages[app.model.page_idx]["id"] == "main")
 
-# Tab to Advanced, open CPU Configuration submenu
+# Tab to Advanced (via Ai Tweaker), open CPU Configuration submenu
+app.handle_key(key(pygame.K_RIGHT), 0)
+check("RIGHT switches to Ai Tweaker",
+      app.model.pages[app.model.page_idx]["id"] == "oc")
 app.handle_key(key(pygame.K_RIGHT), 0)
 check("RIGHT switches to Advanced",
       app.model.pages[app.model.page_idx]["id"] == "advanced")
@@ -251,8 +254,8 @@ check("full dependency chain passes", gm.evaluate())
 check("campaign has at least 20 levels", len(CHALLENGES) >= 20)
 check("levels 11+ are advanced tier",
       all(c.get("tier") == "advanced" for c in CHALLENGES[10:]))
-check("advanced levels have no hints",
-      all(not c["hints"] for c in CHALLENGES[10:]))
+check("classic advanced levels have no hints",
+      all(not c["hints"] for c in CHALLENGES[10:23]))
 
 # ch11 performance chain: turbo only counts once speedstep is back on
 gm.progress = {"level": 10, "attempts": 0, "armed_for_level": -1}
@@ -293,9 +296,10 @@ app.game.progress = gm.progress
 app.state = BRIEFING
 shot(app, "sim_briefing_advanced.png")
 
-# Win: jump to the final level, then succeed -> WIN state
+# Win: jump to the final level (last phase if multi-phase) -> WIN state
 app.game.progress["level"] = len(CHALLENGES) - 1
-app.game.progress["phase"] = 0
+app.game.progress["phase"] = max(
+    0, len(CHALLENGES[-1].get("goal_phases", [])) - 1)
 app.state = OUTCOME
 app.outcome = True
 # Burn through any remaining phases of the final level so we land on WIN.
@@ -388,12 +392,602 @@ check("audio silent no-op never raises", True)
 
 # ----------------------------------------------------------- vendor registry
 import vendors as _vendors
-check("vendor registry has 3 vendors", set(_vendors.ids()) >=
-      {"ami", "award", "efi"})
-for vid in ("ami", "award", "efi"):
+check("vendor registry has 4 vendors", set(_vendors.ids()) >=
+      {"ami", "award", "efi", "phoenix"})
+for vid in ("ami", "award", "efi", "phoenix"):
     spec = _vendors.get(vid)
     check("vendor %s has draw_setup or draw_setup_shell" % vid,
           "draw_setup" in spec or "draw_setup_shell" in spec)
+
+# ----------------------------------------------------------- engine (Phase 1)
+import json
+
+import hardware_rules
+from app import SETUP_SHELL
+from hardware_rules import match_value
+
+print()
+
+
+def buffer_text(buf):
+    return "\n".join("".join(c[0] for c in row) for row in buf.cells)
+
+
+_BASE_TICKET = {
+    "id": "t_base", "vendor": "award", "cpu_brand": "amd",
+    "title": "Test", "briefing": ["Test machine."], "hints": [],
+    "sabotage": {"hd_audio": "Disabled"}, "goal": {"hd_audio": "Enabled"},
+    "fail": {"style": "black", "lines": ["no boot"]},
+    "success_lines": ["ok"],
+}
+
+# Vendor-aware POST: an award ticket boots with the Award sequence
+app_aw = App(game=GameManager(challenges=[_BASE_TICKET], persist=False))
+app_aw.start(0)
+app_aw.handle_key(key(pygame.K_RETURN), 0)
+check("award ticket powers on to POST", app_aw.state == POST)
+buf = ScreenBuffer()
+app_aw.draw(buf, 10_000)
+txt = buffer_text(buf)
+check("award POST lines rendered", "Award Modular BIOS" in txt)
+check("award POST memory count completes",
+      "Memory Testing :  524288K OK" in txt)
+check("award POST prompt rendered", "Press DEL to enter SETUP" in txt)
+app_aw.handle_key(key(pygame.K_F2), 10_000)
+check("award POST ignores F2", app_aw.state == POST)
+app_aw.handle_key(key(pygame.K_DELETE), 10_000)
+check("award POST DEL enters setup", app_aw.state == SETUP)
+
+# EFI POST: ESC (and only ESC) enters the shell
+app_efi = App(game=GameManager(
+    challenges=[dict(_BASE_TICKET, id="t_efi", vendor="efi")], persist=False))
+app_efi.start(0)
+app_efi.handle_key(key(pygame.K_RETURN), 0)
+buf = ScreenBuffer()
+app_efi.draw(buf, 10_000)
+check("efi POST lines rendered", "TianoCore EDK II" in buffer_text(buf))
+app_efi.handle_key(key(pygame.K_DELETE), 10_000)
+check("efi POST ignores DEL", app_efi.state == POST)
+app_efi.handle_key(key(pygame.K_ESCAPE), 10_000)
+check("efi POST ESC enters shell", app_efi.state == SETUP_SHELL)
+
+# Ticket-driven POST context: extra lines + stuck debug code
+app_ctx = App(game=GameManager(challenges=[dict(
+    _BASE_TICKET, id="t_ctx", vendor="ami",
+    post_extra_lines=[(3500, "CMOS Checksum Bad - Press F2 to Run Setup")],
+    post_code_hint="55")], persist=False))
+app_ctx.start(0)
+app_ctx.handle_key(key(pygame.K_RETURN), 0)
+buf = ScreenBuffer()
+app_ctx.draw(buf, 10_000)
+txt = buffer_text(buf)
+check("post extra_lines rendered", "CMOS Checksum Bad" in txt)
+from theme import GRID_W as _GW, GRID_H as _GH
+check("post stuck code rendered",
+      buf.cells[_GH - 1][_GW - 3][0] + buf.cells[_GH - 1][_GW - 2][0] == "55")
+
+# no_video variant: setup blocked, vendor beep requested, ESC powers off
+app_nv = App(game=GameManager(challenges=[dict(
+    _BASE_TICKET, id="t_nv", vendor="ami",
+    post_variant={"variant": "no_video", "beep": "memory_fail"})],
+    persist=False))
+app_nv.start(0)
+app_nv.handle_key(key(pygame.K_RETURN), 0)
+app_nv.handle_key(key(pygame.K_DELETE), 100)
+check("no_video blocks setup entry", app_nv.state == POST)
+check("no_video requests fault beep",
+      app_nv.post.pending_beep(700) == "memory_fail")
+app_nv.handle_key(key(pygame.K_ESCAPE), 700)
+check("no_video ESC powers off to briefing", app_nv.state == BRIEFING)
+
+# Constraint match grammar
+check("match exact", match_value("A", "A") and not match_value("B", "A"))
+check("match membership", match_value("A", ["A", "B"])
+      and not match_value("C", ["A", "B"]))
+check("match comparators", match_value(5, {">=": 3, "<=": 8})
+      and not match_value(2, {">=": 3}) and not match_value(9, {"<=": 8}))
+
+# Per-ticket boot constraint trumps the goal; releasing it passes
+gm_con = GameManager(challenges=[dict(
+    _BASE_TICKET, id="t_con", vendor="ami",
+    boot_constraints=[{
+        "id": "test_con",
+        "match": {"setup_timeout": {">=": 10}},
+        "fail": {"style": "black", "lines": ["POST loop"],
+                 "post_code": "55"},
+    }])], persist=False)
+gm_con.ensure_machine_state()
+vals = settings.load()
+vals.update({"hd_audio": "Enabled", "setup_timeout": 15})
+settings.save(vals)
+ok, fi = gm_con.evaluate_full()
+check("violated constraint fails the boot",
+      ok is False and fi is not None and fi.get("post_code") == "55")
+check("evaluate() keeps bool contract", gm_con.evaluate() is False)
+vals["setup_timeout"] = 1
+settings.save(vals)
+ok, fi = gm_con.evaluate_full()
+check("released constraint passes", ok is True and fi is None)
+
+# Global constraint with an "unless" escape combo
+hardware_rules.GLOBAL_CONSTRAINTS.append({
+    "id": "g_test",
+    "match": {"numlock": "Off"},
+    "unless": {"quiet_boot": "Disabled"},
+    "fail": {"style": "black", "lines": ["numlock crash"]},
+})
+try:
+    vals = settings.load()
+    vals.update({"numlock": "Off", "quiet_boot": "Enabled"})
+    settings.save(vals)
+    ok, fi = gm_con.evaluate_full()
+    check("global constraint fires", ok is False and fi is not None)
+    vals["quiet_boot"] = "Disabled"
+    settings.save(vals)
+    ok, fi = gm_con.evaluate_full()
+    check("unless combo escapes the constraint", ok is True)
+finally:
+    hardware_rules.GLOBAL_CONSTRAINTS.pop()
+
+# Constraint fail_info drives the outcome screen
+app_fi = App(game=gm_con)
+app_fi.state = OUTCOME
+app_fi.outcome, app_fi.outcome_fail = False, {
+    "style": "black", "lines": ["CONSTRAINT FAIL LINE"]}
+buf = ScreenBuffer()
+app_fi.draw(buf, 0)
+check("fail_info overrides scripted fail",
+      "CONSTRAINT FAIL LINE" in buffer_text(buf))
+
+# hw: dynamic info values (static + reactive forms)
+m_hw = MenuModel()
+m_hw.set_hw_info({
+    "cpu_temp": "95 C",
+    "cpu_fan": {"by": "ht", "map": {"Enabled": "1200 RPM"},
+                "default": "0 RPM"},
+})
+check("hw: static value resolves",
+      m_hw.display_value({"type": "info", "dynamic": "hw:cpu_temp"}) == "95 C")
+fan_item = {"type": "info", "dynamic": "hw:cpu_fan"}
+check("hw: reactive value follows setting",
+      m_hw.display_value(fan_item) == "1200 RPM")
+m_hw.values["ht"] = "Disabled"
+check("hw: reactive value falls back to default",
+      m_hw.display_value(fan_item) == "0 RPM")
+
+# depends_on list form
+m_dep = MenuModel()
+dep_item = {"type": "option", "id": "x", "values": ["A"],
+            "depends_on": ("ht", ["Enabled", "Auto"])}
+check("depends_on list form enables", m_dep.is_enabled(dep_item))
+m_dep.values["ht"] = "Disabled"
+check("depends_on list form grays", not m_dep.is_enabled(dep_item))
+
+# F5/F6 value-change aliases in setup
+app_f5 = App()
+app_f5.start(0)
+app_f5.handle_key(key(pygame.K_DELETE), 0)
+while app_f5.model.pages[app_f5.model.page_idx]["id"] != "advanced":
+    app_f5.handle_key(key(pygame.K_RIGHT), 0)
+app_f5.handle_key(key(pygame.K_RETURN), 0)      # CPU Configuration
+check("F5/F6 precondition (cursor on ht)",
+      app_f5.model.current_item()["id"] == "ht")
+app_f5.handle_key(key(pygame.K_F6), 0)
+check("F6 changes value forward", app_f5.model.values["ht"] == "Disabled")
+app_f5.handle_key(key(pygame.K_F5), 0)
+check("F5 changes value back", app_f5.model.values["ht"] == "Enabled")
+
+# hw_actions: persistence round-trip + cleared on advance
+if os.path.exists(game_mod.PROGRESS_PATH):
+    os.remove(game_mod.PROGRESS_PATH)
+gm_act = GameManager()
+gm_act.perform_action("replace_battery")
+check("hw_action recorded", gm_act.has_action("replace_battery"))
+check("hw_action persisted", GameManager().has_action("replace_battery"))
+gm_act.advance()
+check("advance clears hw_actions",
+      not GameManager().has_action("replace_battery"))
+
+# required_actions gates evaluate_full
+gm_req = GameManager(challenges=[dict(
+    _BASE_TICKET, id="t_req", vendor="ami",
+    required_actions=["replace_battery"])], persist=False)
+gm_req.ensure_machine_state()
+vals = settings.load()
+vals["hd_audio"] = "Enabled"
+settings.save(vals)
+ok, fi = gm_req.evaluate_full()
+check("missing bench action fails", ok is False and fi is None)
+gm_req.perform_action("replace_battery")
+check("performed bench action passes", gm_req.evaluate() is True)
+
+# Old-format progress.json (pre-hw_actions) still loads
+with open(game_mod.PROGRESS_PATH, "w", encoding="utf-8") as f:
+    json.dump({"level": 3, "attempts": 1, "armed_for_level": 3,
+               "phase": 0}, f)
+gm_old = GameManager()
+check("old progress.json loads with empty hw_actions",
+      gm_old.level == 3 and gm_old.progress["hw_actions"] == [])
+
+# ----------------------------------------------------------- hardware (Phase 2)
+from menu_model import iter_persistable
+
+print()
+
+check("menu has 8 pages", len(MenuModel().pages) == 8)
+check("campaign has 28 levels", len(CHALLENGES) >= 28)
+
+# XMP Profile 2 fails memory training unless tuned (board limit)
+gm_hw = GameManager(challenges=[dict(
+    _BASE_TICKET, id="t_hw", vendor="ami", sabotage={"xmp": "Profile 2"},
+    goal={})], persist=False)
+gm_hw.ensure_machine_state()
+ok, fi = gm_hw.evaluate_full()
+check("XMP Profile 2 fails training",
+      ok is False and fi is not None and fi["style"] == "memtrain")
+vals = settings.load()
+vals.update({"dram_volt": "1.45V", "cmd_rate": "2T"})
+settings.save(vals)
+ok, fi = gm_hw.evaluate_full()
+check("tuned XMP Profile 2 trains", ok is True)
+vals.update({"xmp": "Disabled", "dram_volt": "Auto", "cmd_rate": "Auto"})
+settings.save(vals)
+check("disabling XMP also boots", gm_hw.evaluate() is True)
+
+# Manual 3600 MHz hits the same wall
+vals["dram_freq"] = "3600 MHz"
+settings.save(vals)
+ok, fi = gm_hw.evaluate_full()
+check("manual 3600 fails training", ok is False and fi["style"] == "memtrain")
+vals["dram_freq"] = "3200 MHz"
+settings.save(vals)
+check("3200 is stable", gm_hw.evaluate() is True)
+
+# Overclock: ratio 50 needs positive vcore; 53+ never boots
+vals.update({"cpu_ratio": 50, "vcore_offset": "Auto"})
+settings.save(vals)
+ok, fi = gm_hw.evaluate_full()
+check("50x on Auto vcore watchdogs",
+      ok is False and "CLOCK_WATCHDOG_TIMEOUT" in " ".join(fi["lines"]))
+vals["vcore_offset"] = "+0.10V"
+settings.save(vals)
+check("50x with +0.10V boots", gm_hw.evaluate() is True)
+vals["cpu_ratio"] = 53
+settings.save(vals)
+ok, fi = gm_hw.evaluate_full()
+check("53x never boots (silicon wall)",
+      ok is False and fi.get("post_code") == "00")
+
+# Fan disabled trips thermal protection
+vals.update({"cpu_ratio": 36, "vcore_offset": "Auto",
+             "cpu_fan_profile": "Disabled"})
+settings.save(vals)
+ok, fi = gm_hw.evaluate_full()
+check("disabled CPU fan trips thermal",
+      ok is False and fi["style"] == "thermtrip")
+vals["cpu_fan_profile"] = "Standard"
+settings.save(vals)
+check("fan restored boots", gm_hw.evaluate() is True)
+
+# Monitor page sensors react to settings out of the box
+m_mon = MenuModel()
+fan_info = {"type": "info", "dynamic": "hw:cpu_fan_rpm"}
+check("default fan readout", m_mon.display_value(fan_info) == "1280 RPM")
+m_mon.values["cpu_fan_profile"] = "Disabled"
+check("fan readout follows profile", m_mon.display_value(fan_info) == "N/A")
+mem_info = {"type": "info", "dynamic": "hw:dram_freq_now"}
+check("memory frequency follows XMP",
+      m_mon.display_value(mem_info) == "2666 MHz")
+m_mon.values["xmp"] = "Profile 1"
+check("memory frequency shows XMP speed",
+      m_mon.display_value(mem_info) == "3200 MHz")
+
+# M.2 lane sharing grays SATA port 1 hot plug
+m_m2 = MenuModel()
+p1 = next(it for it in iter_persistable() if it["id"] == "sata_p1_hotplug")
+check("port 1 hotplug enabled by default", m_m2.is_enabled(p1))
+m_m2.values["m2_mode"] = "SATA"
+check("M.2 SATA mode grays port 1 hotplug", not m_m2.is_enabled(p1))
+
+# ch28 phase 1: grayed hotplug can't satisfy the phase-2 goal early
+ch28 = next(c for c in CHALLENGES if c["id"] == "ch28_m2_lanes")
+gm_28 = GameManager(challenges=[ch28], persist=False)
+gm_28.ensure_machine_state()
+check("ch28 sabotage live", settings.load().get("m2_mode") == "SATA")
+check("ch28 phase 0 fails as shipped", not gm_28.evaluate())
+vals = settings.load()
+vals["m2_mode"] = "Auto"
+settings.save(vals)
+check("ch28 phase 0 passes after lane fix", gm_28.evaluate())
+gm_28.advance_phase()
+check("ch28 phase 1 needs hotplug", not gm_28.evaluate())
+vals["sata_p1_hotplug"] = "Enabled"
+settings.save(vals)
+check("ch28 phase 1 passes", gm_28.evaluate())
+
+# ch24: keeping Profile 2 forces the tuning combo
+ch24 = next(c for c in CHALLENGES if c["id"] == "ch24_xmp_tuning")
+gm_24 = GameManager(challenges=[ch24], persist=False)
+gm_24.ensure_machine_state()
+check("ch24 fails as shipped", not gm_24.evaluate())
+vals = settings.load()
+vals["xmp"] = "Disabled"          # lazy fix: boots, but goal demands P2
+settings.save(vals)
+check("ch24 rejects disabling XMP", not gm_24.evaluate())
+vals.update({"xmp": "Profile 2", "dram_volt": "1.45V", "cmd_rate": "2T"})
+settings.save(vals)
+check("ch24 tuned Profile 2 passes", gm_24.evaluate())
+
+# New templates generate valid, winnable tickets
+from procedural import generate_ticket
+_rng = __import__("random").Random(7)
+for _tpl_id in ("tpl_xmp_unstable", "tpl_oc_watchdog", "tpl_fan_overheat",
+                "tpl_rtc_wake", "tpl_ac_restore", "tpl_erp_wol_conflict",
+                "tpl_m2_lanes", "tpl_cmos_clock"):
+    _exclude = {t["id"] for t in SABOTAGE_TEMPLATES} - {_tpl_id}
+    t = generate_ticket(_rng, _exclude=_exclude)
+    _vgd(t["id"] + ".sabotage", t["sabotage"])
+    _vgd(t["id"] + ".goal", t["goal"])
+check("new templates pass the validator", True)
+t_fan = generate_ticket(_rng, _exclude={t["id"] for t in SABOTAGE_TEMPLATES}
+                        - {"tpl_fan_overheat"})
+check("fan template carries hw_info clue", "cpu_temp" in t_fan.get("hw_info", {}))
+
+# ----------------------------------------------------------- vendors (Phase 3)
+print()
+
+# Award home grid: category navigation, edit, save round-trip
+app_home = App(game=GameManager(
+    challenges=[dict(_BASE_TICKET, id="t_home")], persist=False))
+app_home.start(0)
+app_home.handle_key(key(pygame.K_RETURN), 0)
+app_home.handle_key(key(pygame.K_DELETE), 10_000)
+check("award setup uses the home grid",
+      app_home.model.home_items is not None)
+check("home cursor on STANDARD CMOS SETUP",
+      app_home.model.current_item()["label"] == "STANDARD CMOS SETUP")
+buf = ScreenBuffer()
+app_home.draw(buf, 0)
+txt = buffer_text(buf)
+check("home grid renders categories",
+      "INTEGRATED PERIPHERALS" in txt and "PC HEALTH STATUS" in txt
+      and "FREQUENCY/VOLTAGE CONTROL" in txt)
+app_home.handle_key(key(pygame.K_RIGHT), 0)
+check("RIGHT jumps to the second column",
+      app_home.model.current_item()["label"] == "FREQUENCY/VOLTAGE CONTROL")
+app_home.handle_key(key(pygame.K_LEFT), 0)
+check("LEFT jumps back to the first column",
+      app_home.model.current_item()["label"] == "STANDARD CMOS SETUP")
+for _ in range(5):
+    app_home.handle_key(key(pygame.K_DOWN), 0)
+check("cursor reaches INTEGRATED PERIPHERALS",
+      app_home.model.current_item()["label"] == "INTEGRATED PERIPHERALS")
+app_home.handle_key(key(pygame.K_RETURN), 0)
+check("Enter opens the category", app_home.model.in_submenu)
+lvl = app_home.model.level
+lvl.cursor = next(i for i, it in enumerate(lvl.items)
+                  if it.get("id") == "hd_audio")
+app_home.handle_key(key(pygame.K_F6), 0)
+check("hd_audio toggled inside the category",
+      app_home.model.values["hd_audio"] == "Enabled")
+app_home.handle_key(key(pygame.K_ESCAPE), 0)
+check("Esc returns to the home grid", not app_home.model.in_submenu)
+app_home.handle_key(key(pygame.K_F10), 0)
+app_home.handle_key(key(pygame.K_RETURN), 0)
+check("F10 from home saves and reboots", app_home.state == REBOOT)
+check("award home save persisted",
+      settings.load().get("hd_audio") == "Enabled")
+app_home.update(20_000)
+check("award ticket solved via home grid", app_home.outcome is True)
+
+# Esc at home opens the quit dialog (app_aw is still sitting in setup)
+app_aw.handle_key(key(pygame.K_ESCAPE), 10_000)
+check("Esc at home opens quit dialog",
+      app_aw.popup is not None and app_aw.popup["kind"] == "dialog")
+
+# EFI shell: new commands
+m_sh = MenuModel("intel")
+sh2 = _SS(m_sh)
+for cmd in ("ver", "map", "memmap", "dh", "dmpstore"):
+    check("shell %s outputs" % cmd, bool(sh2.execute(cmd)))
+check("shell echo echoes", sh2.execute("echo ciao") == ["ciao"])
+check("shell time shows clock", ":" in sh2.execute("time")[0])
+sh2.execute("date 06/11/2023")
+check("shell date sets the RTC offset",
+      abs(m_sh.time_offset.total_seconds()) > 86400 * 300)
+check("shell date readback", sh2.execute("date")[0] == "06/11/2023")
+sh2.execute("time 08:30:00")
+check("shell time readback",
+      sh2.execute("time")[0].startswith("08:30"))
+check("shell help lists time/date",
+      any("time" in l for l in sh2.execute("help")))
+
+# ch29: clock fixable entirely from the EFI shell
+import datetime as _dt
+ch29 = next(c for c in CHALLENGES if c["id"] == "ch29_efi_clock")
+gm_29 = GameManager(challenges=[ch29], persist=False)
+gm_29.ensure_machine_state()
+check("ch29 fails with drifted clock", not gm_29.evaluate())
+m29 = MenuModel()
+m29.apply_saved(settings.load())
+sh29 = _SS(m29)
+_now = _dt.datetime.now()
+sh29.execute("date %s" % _now.strftime("%m/%d/%Y"))
+sh29.execute("time %s" % _now.strftime("%H:%M:%S"))
+settings.save(m29.export_values())
+check("ch29 passes after shell clock fix", gm_29.evaluate())
+
+# ----------------------------------------------------------- phoenix (Phase 4)
+print()
+
+ph_ticket = dict(_BASE_TICKET, id="t_ph", vendor="phoenix")
+app_ph = App(game=GameManager(challenges=[ph_ticket], persist=False))
+app_ph.start(0)
+app_ph.handle_key(key(pygame.K_RETURN), 0)
+buf = ScreenBuffer()
+app_ph.draw(buf, 10_000)
+txt = buffer_text(buf)
+check("phoenix POST lines rendered",
+      "PhoenixBIOS 4.0 Release 6.0" in txt)
+check("phoenix POST counts RAM in K",
+      "523264K Extended RAM Passed" in txt)
+check("phoenix POST prompt rendered", "Press <F2> to enter SETUP" in txt)
+app_ph.handle_key(key(pygame.K_DELETE), 10_000)
+check("phoenix POST ignores DEL", app_ph.state == POST)
+app_ph.handle_key(key(pygame.K_F2), 10_000)
+check("phoenix F2 enters setup", app_ph.state == SETUP)
+buf = ScreenBuffer()
+app_ph.draw(buf, 0)
+txt = buffer_text(buf)
+check("phoenix setup chrome rendered",
+      "PhoenixBIOS Setup Utility" in txt and "Item Specific Help" in txt)
+check("phoenix page title overrides applied",
+      "Performance" in txt and "Ai Tweaker" not in txt)
+
+# Solve the ticket end-to-end with phoenix keys (F5/F6 included)
+while app_ph.model.pages[app_ph.model.page_idx]["id"] != "chipset":
+    app_ph.handle_key(key(pygame.K_RIGHT), 0)
+app_ph.handle_key(key(pygame.K_DOWN), 0)       # PCH-IO Configuration
+app_ph.handle_key(key(pygame.K_RETURN), 0)
+lvl = app_ph.model.level
+lvl.cursor = next(i for i, it in enumerate(lvl.items)
+                  if it.get("id") == "hd_audio")
+app_ph.handle_key(key(pygame.K_F6), 0)
+check("phoenix F6 toggles hd_audio",
+      app_ph.model.values["hd_audio"] == "Enabled")
+app_ph.handle_key(key(pygame.K_F10), 0)
+app_ph.handle_key(key(pygame.K_RETURN), 0)
+app_ph.update(REBOOT_MS * 2)
+check("phoenix ticket solved end-to-end",
+      app_ph.state == OUTCOME and app_ph.outcome is True)
+
+# Grouped beep codes: 1-3-3-1 memory pattern = 8 beeps + 3 pauses
+mem_pattern = _vendors.get("phoenix")["beep_map"]["memory_fail"]
+check("phoenix 1-3-3-1 memory beep pattern",
+      sum(1 for f, _ in mem_pattern if f) == 8
+      and sum(1 for f, _ in mem_pattern if not f) == 3)
+
+# Phoenix curated tickets validate and are reachable
+for cid in ("ch30_phoenix_dock", "ch31_phoenix_rtc", "ch32_phoenix_fan"):
+    ch = next(c for c in CHALLENGES if c["id"] == cid)
+    check("%s is a phoenix ticket" % cid, ch["vendor"] == "phoenix")
+
+# ----------------------------------------------------------- diagnosis (Phase 5)
+print()
+
+WINDOWS_SSD = CHALLENGES[0]["goal"]["boot1"]
+NIC = CHALLENGES[0]["sabotage"]["boot1"]
+
+# Dead CMOS battery: saved fixes evaporate until the battery is replaced
+ch33 = next(c for c in CHALLENGES if c["id"] == "ch33_cmos_battery")
+gm_b = GameManager(challenges=[ch33], persist=False)
+app_b = App(game=gm_b)
+app_b.start(0)
+check("battery ticket starts in BRIEFING", app_b.state == BRIEFING)
+buf = ScreenBuffer()
+app_b.draw(buf, 0)
+check("briefing shows the TOOLBOX",
+      "TOOLBOX" in buffer_text(buf)
+      and "replace the CMOS battery" in buffer_text(buf))
+ctx = gm_b.post_context()
+check("dead battery injects CMOS checksum POST lines",
+      any("CMOS checksum error" in t for _, t in ctx.get("extra_lines", [])))
+vals = settings.load()
+vals.update({"boot1": WINDOWS_SSD, "_time_offset_s": 0})
+settings.save(vals)
+ok, fi = gm_b.evaluate_full()
+check("correct settings still fail with dead battery", ok is False)
+gm_b.record_failure()
+gm_b.ensure_machine_state()
+saved = settings.load()
+check("dead battery wipes the player's fixes on reboot",
+      saved.get("boot1") == NIC
+      and abs(saved.get("_time_offset_s", 0) + 94608000) < 1)
+app_b.handle_key(key(pygame.K_b), 0)
+check("B replaces the battery without powering on",
+      app_b.state == BRIEFING and gm_b.has_action("replace_battery"))
+buf = ScreenBuffer()
+app_b.draw(buf, 0)
+check("toolbox marks the action done", "[done:" in buffer_text(buf))
+check("fresh battery clears the checksum POST lines",
+      not gm_b.post_context().get("extra_lines"))
+vals = settings.load()
+vals.update({"boot1": WINDOWS_SSD, "_time_offset_s": 0})
+settings.save(vals)
+gm_b.ensure_machine_state()
+check("fresh battery retains settings across boots",
+      settings.load().get("boot1") == WINDOWS_SSD)
+check("ch33 passes after battery swap + fixes", gm_b.evaluate() is True)
+
+# No-video ticket: blind machine, fixed from the bench
+ch34 = next(c for c in CHALLENGES if c["id"] == "ch34_novideo")
+app_n = App(game=GameManager(challenges=[ch34], persist=False))
+app_n.start(0)
+app_n.handle_key(key(pygame.K_RETURN), 0)        # power on
+buf = ScreenBuffer()
+app_n.draw(buf, 5000)
+check("no-video POST transcribes the beeps",
+      "three short" in buffer_text(buf))
+app_n.handle_key(key(pygame.K_DELETE), 5000)
+check("no-video blocks Setup", app_n.state == POST)
+app_n.handle_key(key(pygame.K_ESCAPE), 5000)     # power off
+check("ESC powers off to the bench", app_n.state == BRIEFING)
+app_n.handle_key(key(pygame.K_j), 5000)          # clear CMOS
+check("J clears NVRAM to defaults",
+      app_n.state == BRIEFING
+      and settings.load().get("xmp") == "Disabled"
+      and app_n.game.has_action("clear_cmos"))
+app_n.handle_key(key(pygame.K_RETURN), 5000)     # power on again
+app_n.handle_key(key(pygame.K_DELETE), 20_000)
+check("video restored after CMOS clear", app_n.state == SETUP)
+app_n.handle_key(key(pygame.K_F10), 20_000)
+app_n.handle_key(key(pygame.K_RETURN), 20_000)
+app_n.update(20_000 + REBOOT_MS + 1)
+check("ch34 solved from the bench",
+      app_n.state == OUTCOME and app_n.outcome is True)
+
+# Red herrings: deterministic, bounded, never interfering
+import random as _random
+from procedural import add_red_herrings, NOISE_SAFE
+t1 = {"sabotage": {"boot1": NIC}, "goal": {"boot1": WINDOWS_SSD}}
+t2 = {"sabotage": {"boot1": NIC}, "goal": {"boot1": WINDOWS_SSD}}
+add_red_herrings(_random.Random(3), t1, k=2)
+add_red_herrings(_random.Random(3), t2, k=2)
+noise = set(t1["sabotage"]) - {"boot1"}
+check("red herrings added from the safe pool",
+      len(noise) == 2 and noise <= set(NOISE_SAFE))
+check("red herrings deterministic per seed", t1 == t2)
+t3 = {"sabotage": {}, "goal": {"cstates": "Enabled"}}
+add_red_herrings(_random.Random(1), t3, k=99)
+check("goal ids excluded from noise", "cstates" not in t3["sabotage"])
+t4 = {"sabotage": {}, "goal": {}}
+add_red_herrings(_random.Random(1), t4, k=99)
+_constraint_ids = {"xmp", "dram_freq", "dram_volt", "cmd_rate",
+                   "cpu_ratio", "vcore_offset", "cpu_fan_profile"}
+check("noise never touches board-constraint inputs",
+      not set(t4["sabotage"]) & _constraint_ids)
+for iid in t4["sabotage"]:
+    _vgd("noise", {iid: t4["sabotage"][iid]})
+check("noise values pass the validator", True)
+
+# Generated difficulty>=2 tickets carry noise beyond the template sabotage
+_exclude = {t["id"] for t in SABOTAGE_TEMPLATES} - {"tpl_sata_mode"}
+t_gen = generate_ticket(_random.Random(5), _exclude=_exclude)
+check("generated d2 ticket has red herrings",
+      len(set(t_gen["sabotage"]) - {"sata_mode"}) >= 1)
+
+# Extended validator rejects bad data
+try:
+    game_mod._validate_constraint("bad", {
+        "match": {"hd_audio": {">=": 3}}, "fail": {"lines": ["x"]}})
+    check("validator rejects comparator on option", False)
+except AssertionError:
+    check("validator rejects comparator on option", True)
+try:
+    game_mod._validate_extras("bad", {"required_actions": ["solder_mod"]})
+    check("validator rejects unknown action", False)
+except AssertionError:
+    check("validator rejects unknown action", True)
 
 # Cleanup so a fresh game starts at level 0 with pristine settings
 for p in (settings.SETTINGS_PATH, settings.USER_DEFAULTS_PATH,
