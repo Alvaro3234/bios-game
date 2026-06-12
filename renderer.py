@@ -47,6 +47,13 @@ class Renderer:
             py = y * CELL_H
             for x, (ch, fg, bg) in enumerate(row):
                 blit(get(ch, fg, bg), (x * CELL_W, py))
+        if buf.overlays:
+            import images
+            for key, x, y, anchor in buf.overlays:
+                img = images.get(key)
+                if anchor == "topright":
+                    x = NATIVE_W - img.get_width() - x
+                blit(img, (x, y))
         return self.surface
 
 

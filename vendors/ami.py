@@ -188,6 +188,7 @@ spec = {
     "post_prompt_keys": "del f2",
     "post_palette": (POST_BG, POST_FG, POST_HI),
     "post_memcount": POST_MEMCOUNT,
+    "post_logo": {"key": "logo_ami", "t": 300},
     # AMI POST: 1 long = OK, 1 long + 2 short = video error, etc.
     "beep_map": {
         "ok": [(900, 350)],

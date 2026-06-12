@@ -10,6 +10,8 @@ Data-driven by the active vendor's spec:
                        "ok_suffix"} — drawn between line index `after`-1
                       and `after`, counting up to `total` in `step`s.
     post_show_code    show the 2-digit POST code bottom-right (default True)
+    post_logo         optional pixel-art logo blitted top-right:
+                      {"key": images.py key, "t": reveal ms (default 0)}
 
 plus an optional per-ticket context:
     extra_lines       [(ms, text), ...] appended to the timeline
@@ -39,6 +41,7 @@ _FALLBACK = {
     "post_palette": (POST_BG, POST_FG, POST_HI),
     "post_memcount": None,
     "post_show_code": True,
+    "post_logo": None,
 }
 
 _SPEC_KEYS = tuple(_FALLBACK)
@@ -125,6 +128,10 @@ class PostScreen:
         if self.context.get("variant") == "no_video":
             self._draw_no_video(buf, t, bg)
             return
+
+        logo = self.spec.get("post_logo")
+        if logo and t >= logo.get("t", 0):
+            buf.image(logo["key"], 8, 8, anchor="topright")
 
         lines = self.timeline()
         mc = self.spec.get("post_memcount")

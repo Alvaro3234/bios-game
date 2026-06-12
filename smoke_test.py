@@ -466,6 +466,18 @@ from theme import GRID_W as _GW, GRID_H as _GH
 check("post stuck code rendered",
       buf.cells[_GH - 1][_GW - 3][0] + buf.cells[_GH - 1][_GW - 2][0] == "55")
 
+# POST logos: vendor pixel-art overlay queued (and renderable), EFI bare
+check("ami POST queues its logo overlay",
+      ("logo_ami", 8, 8, "topright") in buf.overlays)
+import images
+check("every overlay key builds a surface",
+      all(images.get(k).get_width() > 0 for k in
+          ("logo_ami", "logo_energy", "logo_phoenix",
+           "icon_battery", "icon_jumper")))
+buf = ScreenBuffer()
+app_efi.post.draw(buf, 10_000)
+check("efi POST stays logo-free", not buf.overlays)
+
 # no_video variant: setup blocked, vendor beep requested, ESC powers off
 app_nv = App(game=GameManager(challenges=[dict(
     _BASE_TICKET, id="t_nv", vendor="ami",

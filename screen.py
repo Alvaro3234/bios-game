@@ -12,12 +12,22 @@ class ScreenBuffer:
     def __init__(self):
         self.cells = [[(" ", (0, 0, 0), (0, 0, 0)) for _ in range(GRID_W)]
                       for _ in range(GRID_H)]
+        # Pixel-art overlays blitted on top of the cell grid by the
+        # Renderer: (image_key, x_px, y_px, anchor). See images.py.
+        self.overlays = []
 
     def clear(self, fg, bg):
         cell = (" ", fg, bg)
         for row in self.cells:
             for x in range(GRID_W):
                 row[x] = cell
+        self.overlays = []
+
+    def image(self, key, x, y, anchor="topleft"):
+        """Queue the pixel-art image `key` (an images.py key) on top of
+        the grid. x/y are pixel offsets from the anchored corner
+        (anchor: "topleft" or "topright")."""
+        self.overlays.append((key, x, y, anchor))
 
     def put(self, x, y, ch, fg, bg):
         if 0 <= x < GRID_W and 0 <= y < GRID_H:

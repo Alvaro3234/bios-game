@@ -268,6 +268,7 @@ spec = {
     "post_palette": (POST_BG, POST_FG, POST_HI),
     "post_memcount": POST_MEMCOUNT,
     "post_show_code": False,
+    "post_logo": {"key": "logo_phoenix", "t": 200},
     # Phoenix beep codes: grouped patterns (memory failure = 1-3-3-1,
     # video failure = 1-2-2-3). POST OK is a single short beep.
     "beep_map": {

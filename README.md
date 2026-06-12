@@ -53,7 +53,9 @@ straight into an endless run.
 
 Challenges declare which firmware UI the customer's machine runs.
 Same underlying menu model, four very different presentations — each
-with its own POST sequence, boot prompt and beep codes:
+with its own POST sequence, boot logo, boot prompt and beep codes
+(the AMI badge, the Award-era Energy-Star-style emblem and the Phoenix
+bird are pixel art drawn at runtime — no image files involved):
 
 - **AMI Aptio** — the modern blue/grey UEFI Setup Utility (the
   default for most tickets). Memory count in MB, debug code in the
@@ -98,6 +100,10 @@ the CMOS battery's VBAT) that double as diagnostic clues.
 |---|---|
 | any key | Power the machine on |
 | `B` / `J` | Bench actions, when the TOOLBOX offers them (replace CMOS battery / clear CMOS jumper) |
+
+Tickets that involve physical work show a TOOLBOX side toolbar on the
+right of the briefing: each bench tool with its hotkey, an icon, and
+whether it is available, already used, or not needed for this ticket.
 
 ### POST screen
 | Key | Action |
@@ -193,7 +199,8 @@ attaches the three OS binaries to a GitHub Release automatically.
 - `menu_data.py`   — data-driven definitions of all eight BIOS pages
 - `menu_model.py`  — navigation, values, dependencies (`depends_on` graying), CPU-brand label resolution
 - `theme.py`       — palette, grid dimensions, layout metrics (single AMI tuning point)
-- `screen.py` / `renderer.py` / `font.py` — 100×31 cell buffer, glyph cache
+- `screen.py` / `renderer.py` / `font.py` — 100×31 cell buffer, glyph cache, pixel-art overlays
+- `images.py`      — runtime-drawn pixel art (POST vendor logos, toolbox icons)
 - `audio.py`       — synthesized POST beeps, key clicks, outcome jingles
 - `paths.py`       — resolves resource vs. writable directories under PyInstaller
 - `settings.py`    — atomic JSON persistence

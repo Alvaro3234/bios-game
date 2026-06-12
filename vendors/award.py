@@ -365,6 +365,8 @@ spec = {
     "post_palette": (POST_BG, POST_FG, POST_HI),
     "post_memcount": POST_MEMCOUNT,
     "post_show_code": False,    # no on-screen debug code in the Award era
+    # "An Energy Star Ally": the era-defining emblem sat top-right.
+    "post_logo": {"key": "logo_energy", "t": 200},
     # Award POST: 1 short = OK; 1 long + 2 short = video error;
     # continuous beeping = memory error.
     "beep_map": {

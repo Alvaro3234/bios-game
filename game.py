@@ -10,8 +10,8 @@ from menu_data import MENU
 from menu_model import MenuModel, iter_persistable
 from paths import writable
 from renderer import word_wrap
-from theme import (GRID_W, GRID_H, BLUE, WHITE, BLACK,
-                   POST_BG, POST_FG, POST_HI)
+from theme import (GRID_W, GRID_H, CELL_W, CELL_H, BLUE, WHITE, BLACK,
+                   DISABLED, POST_BG, POST_FG, POST_HI)
 
 PROGRESS_PATH = writable("progress.json")
 
@@ -19,6 +19,24 @@ ITEM_BY_ID = {it["id"]: it for it in iter_persistable()}
 
 # Physical bench actions the player can perform from the briefing screen.
 KNOWN_ACTIONS = {"replace_battery", "clear_cmos"}
+
+
+def _flow_paragraphs(paras):
+    """Merge consecutive prose lines into flowing paragraphs so briefings
+    re-wrap cleanly at any box width. Blank separators and indented
+    lines (console excerpts, command examples) stay verbatim."""
+    out, cur = [], ""
+    for p in paras:
+        if not p or p.startswith(" "):
+            if cur:
+                out.append(cur)
+                cur = ""
+            out.append(p)
+        else:
+            cur = (cur + " " + p) if cur else p
+    if cur:
+        out.append(cur)
+    return out
 
 
 def _validate_goal_dict(label, goal):
@@ -339,6 +357,7 @@ class GameManager:
     def draw_briefing(self, buf, now):
         ch = self.current()
         advanced = ch.get("tier") == "advanced"
+        bench = ch.get("bench", [])
         buf.clear(POST_FG, POST_BG)
         header = ("BIOS REPAIR SERVICE - SENIOR TECHNICIAN" if advanced
                   else "BIOS REPAIR SERVICE")
@@ -349,16 +368,17 @@ class GameManager:
             tag += "  PHASE %d/%d" % (phase_idx + 1, total_phases)
         buf.text(GRID_W - 2 - len(tag), 1, tag, POST_FG, POST_BG)
 
-        # Ticket box
-        x0, x1 = 4, GRID_W - 5
+        # Ticket box (narrower when the bench toolbar takes the right side)
+        x0 = 4
+        x1 = (GRID_W - 37) if bench else (GRID_W - 5)
         inner = x1 - x0 - 5
         lines = []
-        for para in ch["briefing"]:
+        for para in _flow_paragraphs(ch["briefing"]):
             lines.extend(word_wrap(para, inner) if para else [""])
         addendum = phase.get("phase_briefing_addendum") if phase else None
         if addendum:
             lines.append("")
-            for para in addendum:
+            for para in _flow_paragraphs(addendum):
                 lines.extend(word_wrap(para, inner) if para else [""])
         hints = self.visible_hints()
         if hints:
@@ -384,32 +404,47 @@ class GameManager:
         if self.attempts:
             buf.text(x0, 4 + h, "Failed attempts: %d" % self.attempts,
                      POST_FG, POST_BG)
-        self._draw_toolbox(buf, ch, x0, h)
+        if bench:
+            self._draw_tool_sidebar(buf, bench)
         if (now // 530) % 2 == 0:
             buf.text_center(GRID_H - 2,
                             "Press any key to power on the machine",
                             POST_HI, POST_BG)
 
-    _TOOLBOX_LABELS = {
-        "replace_battery": "B: replace the CMOS battery (CR2032)",
-        "clear_cmos": "J: short the CLR_CMOS jumper (reset NVRAM)",
-    }
-    _TOOLBOX_DONE = {
-        "replace_battery": "battery replaced, fresh CR2032 installed",
-        "clear_cmos": "NVRAM cleared to factory defaults",
-    }
+    # Side toolbar: every known bench tool with its hotkey, pixel icon,
+    # availability for this ticket and done state.
+    _TOOLS = [
+        ("replace_battery", "icon_battery", "CR2032 BATTERY",
+         "B: replace the CMOS battery", "[done: battery replaced]"),
+        ("clear_cmos", "icon_jumper", "CLR_CMOS JUMPER",
+         "J: short the CLR_CMOS jumper", "[done: NVRAM cleared]"),
+    ]
 
-    def _draw_toolbox(self, buf, ch, x0, h):
-        bench = ch.get("bench", [])
-        if not bench:
-            return
-        y = 5 + h
-        buf.text(x0, y, "TOOLBOX (bench actions):", POST_HI, POST_BG)
-        for i, act in enumerate(bench):
-            line = "  " + self._TOOLBOX_LABELS.get(act, act)
-            if self.has_action(act):
-                line += "   [done: %s]" % self._TOOLBOX_DONE.get(act, "ok")
-            buf.text(x0, y + 1 + i, line, POST_FG, POST_BG)
+    def _draw_tool_sidebar(self, buf, bench):
+        x, w = GRID_W - 35, 33
+        y0, y1 = 3, GRID_H - 4
+        buf.box(x, y0, w, y1 - y0 + 1, WHITE, POST_BG, fill=False)
+        title = " TOOLBOX "
+        buf.text(x + (w - len(title)) // 2, y0, title, POST_HI, POST_BG)
+        y = y0 + 2
+        for act, icon, heading, label, done in self._TOOLS:
+            avail = act in bench
+            buf.image(icon, (x + 2) * CELL_W, y * CELL_H)
+            buf.text(x + 5, y, heading,
+                     POST_HI if avail else DISABLED, POST_BG)
+            buf.text(x + 2, y + 1, label,
+                     POST_FG if avail else DISABLED, POST_BG)
+            if not avail:
+                status, sfg = "(not needed for this ticket)", DISABLED
+            elif self.has_action(act):
+                status, sfg = done, POST_HI
+            else:
+                status, sfg = "(available while powered off)", POST_FG
+            buf.text(x + 2, y + 2, status, sfg, POST_BG)
+            y += 4
+        for i, line in enumerate(("Bench actions only work",
+                                  "while the machine is off.")):
+            buf.text(x + 2, y1 - 3 + i, line, DISABLED, POST_BG)
 
     def draw_outcome(self, buf, success, now, fail_info=None):
         ch = self.current()
